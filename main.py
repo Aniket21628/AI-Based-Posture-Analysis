@@ -8,14 +8,16 @@ import os
 
 # Initialize MediaPipe Pose
 mp_pose = mp.solutions.pose
-pose = mp_pose.Pose(static_image_mode=False, model_complexity=1, enable_segmentation=False, min_detection_confidence=0.5)
+pose = mp_pose.Pose(static_image_mode=False, model_complexity=0, enable_segmentation=False, min_detection_confidence=0.3)
 
 # Load CNN Model
 def load_model():
     try:
-        model = tf.keras.models.load_model('posture_model.h5')
-        print("CNN model loaded successfully.")
-        return model
+        # Load the TensorFlow Lite model
+        interpreter = tf.lite.Interpreter(model_path='posture_model.tflite')
+        interpreter.allocate_tensors()
+        print("TensorFlow Lite model loaded successfully.")
+        return interpreter
     except Exception as e:
         print(f"Error loading model: {e}")
         return None
@@ -33,8 +35,8 @@ def preprocess_image(image):
     if image.shape[0] == 0 or image.shape[1] == 0:
         return None
     image = cv2.resize(image, (224, 224))
-    image = image / 255.0
-    return np.expand_dims(image, axis=0)
+    image = image / 255.0  # Normalize to FLOAT32 as expected by the model
+    return np.expand_dims(image, axis=0).astype(np.float32)
 
 # Function to extract human region for CNN input
 def extract_human_region(frame, landmarks, h, w):
@@ -84,11 +86,25 @@ def main():
                 processed_region = preprocess_image(region)
                 if processed_region is not None:
                     try:
-                        prediction = model.predict(processed_region, verbose=0)
+                        # Set input tensor
+                        input_details = model.get_input_details()
+                        output_details = model.get_output_details()
+                        model.set_tensor(input_details[0]['index'], processed_region)
+                        # Run inference
+                        model.invoke()
+                        # Get output
+                        prediction = model.get_tensor(output_details[0]['index'])
+                        print(f"Raw prediction output: {prediction}")  # Debug output
+                        # Apply softmax normalization if raw outputs are not probabilities
+                        prediction = np.exp(prediction) / np.sum(np.exp(prediction))
                         confidence = np.max(prediction)
                         posture_idx = np.argmax(prediction)
-                        posture = "Good" if posture_idx == 1 else "Bad"
+                        posture = "Good" if posture_idx == 0 else "Bad"  # Reversing the mapping
                         color = (0, 255, 0) if posture == "Good" else (0, 0, 255)
+                        # Apply a threshold to avoid overconfidence
+                        if confidence < 0.6:
+                            posture = "Unknown"
+                            color = (128, 128, 128)  # Gray for unknown
                     except Exception as e:
                         print(f"Prediction error: {e}")
 
